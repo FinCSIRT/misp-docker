@@ -91,29 +91,10 @@ services:
 
   misp-core:
     image: ghcr.io/misp/misp-docker/misp-core:${CORE_RUNNING_TAG:-latest}
-    restart: always
+    restart: unless-stopped  # Changed from always
     container_name: misp-core
     cap_add:
       - AUDIT_WRITE
-    build:
-      context: core/.
-      args:
-          - CORE_TAG=${CORE_TAG:?Missing or outdated .env file, see README.md for instructions}
-          - CORE_COMMIT=${CORE_COMMIT}
-          - CORE_FLAVOR=${CORE_FLAVOR:-full}
-          - PHP_VER=${PHP_VER:?Missing or outdated .env file, see README.md for instructions}
-          - PYPI_REDIS_VERSION=${PYPI_REDIS_VERSION}
-          - PYPI_LIEF_VERSION=${PYPI_LIEF_VERSION}
-          - PYPI_PYDEEP2_VERSION=${PYPI_PYDEEP2_VERSION}
-          - PYPI_PYTHON_MAGIC_VERSION=${PYPI_PYTHON_MAGIC_VERSION}
-          - PYPI_MISP_LIB_STIX2_VERSION=${PYPI_MISP_LIB_STIX2_VERSION}
-          - PYPI_MAEC_VERSION=${PYPI_MAEC_VERSION}
-          - PYPI_MIXBOX_VERSION=${PYPI_MIXBOX_VERSION}
-          - PYPI_CYBOX_VERSION=${PYPI_CYBOX_VERSION}
-          - PYPI_PYMISP_VERSION=${PYPI_PYMISP_VERSION}
-          - PYPI_MISP_STIX_VERSION=${PYPI_MISP_STIX_VERSION}
-          - PYPI_SETUPTOOLS_VERSION=${PYPI_SETUPTOOLS_VERSION}
-          - PYPI_SUPERVISOR_VERSION=${PYPI_SUPERVISOR_VERSION}
     depends_on:
       redis:
         condition: service_healthy
@@ -122,16 +103,11 @@ services:
       misp-modules:
         condition: service_healthy
     healthcheck:
-      test: curl -ks ${BASE_URL:-https://localhost}/users/heartbeat > /dev/null || exit 1
-      interval: 2s
-      timeout: 1s
+      test: ["CMD", "curl", "-f", "http://localhost/users/heartbeat"]  # Fixed healthcheck
+      interval: 30s
+      timeout: 10s
       retries: 3
-      start_period: 30s
-      start_interval: 30s
-    # REMOVED PORTS - Traefik will handle external access
-    # ports:
-    #   - "${CORE_HTTP_PORT:-80}:80"
-    #   - "${CORE_HTTPS_PORT:-443}:443"
+      start_period: 120s  # Longer startup period
     volumes:
       - "./configs/:/var/www/MISP/app/Config/:Z"
       - "./logs/:/var/www/MISP/app/tmp/logs/:Z"
@@ -140,75 +116,38 @@ services:
       - "./gnupg/:/var/www/MISP/.gnupg/:Z"
     environment:
       - "BASE_URL=${BASE_URL}"
-      - "CRON_USER_ID=${CRON_USER_ID}"
-      - "CRON_PULLALL=${CRON_PULLALL}"
-      - "CRON_PUSHALL=${CRON_PUSHALL}"
-      - "DISABLE_IPV6=${DISABLE_IPV6}"
-      - "DISABLE_SSL_REDIRECT=true"  # Force disable SSL redirect since Traefik handles it
-      - "ENABLE_DB_SETTINGS=${ENABLE_DB_SETTINGS}"
-      - "ENABLE_BACKGROUND_UPDATES=${ENABLE_BACKGROUND_UPDATES}"
       - "ENCRYPTION_KEY=${ENCRYPTION_KEY}"
-      - "DISABLE_CA_REFRESH=${DISABLE_CA_REFRESH}"
-      - "DISABLE_PRINTING_PLAINTEXT_CREDENTIALS=${DISABLE_PRINTING_PLAINTEXT_CREDENTIALS}"
-      # standard settings
+      - "DISABLE_SSL_REDIRECT=true"
+      - "DISABLE_PRINTING_PLAINTEXT_CREDENTIALS=true"
+      - "ENABLE_DB_SETTINGS=true"
+      - "DEBUG=0"
+      # Admin settings
       - "ADMIN_EMAIL=${ADMIN_EMAIL}"
       - "ADMIN_PASSWORD=${ADMIN_PASSWORD}"
-      - "ADMIN_KEY=${ADMIN_KEY}"
       - "ADMIN_ORG=${ADMIN_ORG}"
-      - "ADMIN_ORG_UUID=${ADMIN_ORG_UUID}"
       - "GPG_PASSPHRASE=${GPG_PASSPHRASE}"
-      - "ATTACHMENTS_DIR=${ATTACHMENTS_DIR}"
-      # NGINX behind Traefik settings
-      - "NGINX_X_FORWARDED_FOR=true"  # Enable IP forwarding from Traefik
-      - "NGINX_SET_REAL_IP_FROM=172.0.0.0/8,10.0.0.0/8"  # Trust Docker networks
-      - "NGINX_CLIENT_MAX_BODY_SIZE=${NGINX_CLIENT_MAX_BODY_SIZE:-50M}"
-      # mysql settings
-      - "MYSQL_HOST=${MYSQL_HOST:-db}"
-      - "MYSQL_PORT=${MYSQL_PORT:-3306}"
-      - "MYSQL_USER=${MYSQL_USER:-misp}"
-      - "MYSQL_PASSWORD=${MYSQL_PASSWORD:-example}"
-      - "MYSQL_DATABASE=${MYSQL_DATABASE:-misp}"
-      # redis settings
-      - "REDIS_HOST=${REDIS_HOST:-redis}"
-      - "REDIS_PORT=${REDIS_PORT:-6379}"
-      - "REDIS_PASSWORD=${REDIS_PASSWORD:-redispassword}"
-      - "ENABLE_REDIS_EMPTY_PASSWORD=${ENABLE_REDIS_EMPTY_PASSWORD:-false}"
-      # debug setting 
-      - "DEBUG=0"  # Force debug off for security
-      # Security settings
-      - "HSTS_MAX_AGE=31536000"
-      - "X_FRAME_OPTIONS=SAMEORIGIN"
+      # Database settings
+      - "MYSQL_HOST=db"
+      - "MYSQL_USER=${MYSQL_USER}"
+      - "MYSQL_PASSWORD=${MYSQL_PASSWORD}"
+      - "MYSQL_DATABASE=${MYSQL_DATABASE}"
+      # Redis settings
+      - "REDIS_HOST=redis"
+      - "REDIS_PASSWORD=${REDIS_PASSWORD}"
+      # NGINX settings for Traefik
+      - "NGINX_X_FORWARDED_FOR=true"
+      - "NGINX_SET_REAL_IP_FROM=172.0.0.0/8,10.0.0.0/8"
     labels:
-      # Traefik configuration
       - "traefik.enable=true"
-      
-      # HTTP to HTTPS redirect
       - "traefik.http.routers.misp-http.rule=Host(`misp.fincident.org`)"
       - "traefik.http.routers.misp-http.entrypoints=web"
       - "traefik.http.routers.misp-http.middlewares=redirect-to-https"
-      
-      # HTTPS configuration
       - "traefik.http.routers.misp.rule=Host(`misp.fincident.org`)"
       - "traefik.http.routers.misp.entrypoints=websecure"
-      - "traefik.http.routers.misp.tls=true"
       - "traefik.http.routers.misp.tls.certresolver=letsencrypt"
-      
-      # Service configuration - CORRECTED PORT (MISP listens on 80 internally)
       - "traefik.http.services.misp.loadbalancer.server.port=80"
-      
-      # Middleware definitions
       - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
       - "traefik.http.middlewares.redirect-to-https.redirectscheme.permanent=true"
-      
-      # Security headers middleware
-      - "traefik.http.middlewares.misp-securityheaders.headers.forcestsheader=true"
-      - "traefik.http.middlewares.misp-securityheaders.headers.stsseconds=31536000"
-      - "traefik.http.middlewares.misp-securityheaders.headers.stsincludesubdomains=true"
-      - "traefik.http.middlewares.misp-securityheaders.headers.stspreload=true"
-      - "traefik.http.middlewares.misp-securityheaders.headers.customrequestheaders.X-Forwarded-Proto=https"
-      
-      # Apply middlewares
-      - "traefik.http.routers.misp.middlewares=misp-securityheaders"
     networks:
       - dokploy-network
 
