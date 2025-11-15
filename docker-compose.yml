@@ -16,6 +16,8 @@ services:
       - "SMARTHOST_USER=${SMARTHOST_USER}"
       - "SMARTHOST_PASSWORD=${SMARTHOST_PASSWORD}"
       - "SMARTHOST_ALIASES=${SMARTHOST_ALIASES}"
+    networks:
+      - dokploy-network
 
   redis:
     image: valkey/valkey:7.2
@@ -77,6 +79,8 @@ services:
       retries: 3
       start_period: 30s
       start_interval: 5s
+    networks:
+      - dokploy-network
 
   misp-core:
     image: ghcr.io/misp/misp-docker/misp-core:${CORE_RUNNING_TAG:-latest}
@@ -295,6 +299,21 @@ services:
       - "HSTS_MAX_AGE=${HSTS_MAX_AGE}"
       - "X_FRAME_OPTIONS=${X_FRAME_OPTIONS}"
       - "CONTENT_SECURITY_POLICY=${CONTENT_SECURITY_POLICY}"
+    labels:
+      # Traefik configuration for HTTPS
+      - "traefik.enable=true"
+      - "traefik.http.routers.misp.rule=Host(`misp.fincident.org`)"
+      - "traefik.http.routers.misp.entrypoints=websecure"
+      - "traefik.http.routers.misp.tls.certresolver=letsencrypt"
+      - "traefik.http.services.misp.loadbalancer.server.port=443"
+      # Security headers
+      - "traefik.http.middlewares.misp-securityheaders.headers.forcestsheader=true"
+      - "traefik.http.middlewares.misp-securityheaders.headers.stsseconds=31536000"
+      - "traefik.http.middlewares.misp-securityheaders.headers.stsincludesubdomains=true"
+      - "traefik.http.middlewares.misp-securityheaders.headers.stspreload=true"
+      - "traefik.http.routers.misp.middlewares=misp-securityheaders"
+    networks:
+      - dokploy-network
 
   misp-modules:
     image: ghcr.io/misp/misp-docker/misp-modules:${MODULES_RUNNING_TAG:-latest}
@@ -318,6 +337,8 @@ services:
       - "./custom/expansion/:/custom/expansion/:Z"
       - "./custom/export_mod/:/custom/export_mod/:Z"
       - "./custom/import_mod/:/custom/import_mod/:Z"
+    networks:
+      - dokploy-network
 
   misp-guard:
     profiles:
@@ -344,8 +365,13 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-      
+     networks:
+      - dokploy-network
 
 volumes:
     mysql_data:
     cache_data:
+
+networks:
+  dokploy-network:
+    external: true  # External network for Traefik (created by Dokploy
