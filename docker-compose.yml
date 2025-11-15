@@ -1,100 +1,58 @@
 services:
-  # This is capable to relay via gmail, Amazon SES, or generic relays
-  # See: https://gitlab.com/egos-tech/smtp
-  mail:
-    image: ghcr.io/egos-tech/smtp:1.1.3
-    restart: always
-    container_name: misp-mail  # Added container name
-    environment:
-      # For use with Amazon SES relay
-      - "SES_USER=${SES_USER}"
-      - "SES_PASSWORD=${SES_PASSWORD}"
-      - "SES_REGION=${SES_REGION}"
-      - "SES_PORT=${SES_PORT}"
-      # Generic SMTP relay
-      - "SMARTHOST_ADDRESS=${SMARTHOST_ADDRESS}"
-      - "SMARTHOST_PORT=${SMARTHOST_PORT}"
-      - "SMARTHOST_USER=${SMARTHOST_USER}"
-      - "SMARTHOST_PASSWORD=${SMARTHOST_PASSWORD}"
-      - "SMARTHOST_ALIASES=${SMARTHOST_ALIASES}"
-    networks:
-      - dokploy-network
-
   redis:
     image: valkey/valkey:7.2
-    restart: always
+    restart: unless-stopped
     container_name: misp-redis
-    command: |
-      sh -c '
-        if [ "$${ENABLE_REDIS_EMPTY_PASSWORD:-false}" = "true" ]; then
-          exec valkey-server
-        else
-          exec valkey-server --requirepass "$${REDIS_PASSWORD:-redispassword}"
-        fi
-      '
+    command: valkey-server --requirepass ${REDIS_PASSWORD}
     environment:
-      - "ENABLE_REDIS_EMPTY_PASSWORD=${ENABLE_REDIS_EMPTY_PASSWORD:-false}"
-      - "REDIS_PASSWORD=${REDIS_PASSWORD:-redispassword}"
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
     healthcheck:
-      test: |
-        sh -c '
-          if [ "$${ENABLE_REDIS_EMPTY_PASSWORD:-false}" = "true" ]; then
-            valkey-cli -p $${REDIS_PORT:-6379} ping | grep -q PONG || exit 1
-          else
-            valkey-cli -a "$${REDIS_PASSWORD:-redispassword}" -p $${REDIS_PORT:-6379} ping | grep -q PONG || exit 1
-          fi
-        '
-      interval: 2s
-      timeout: 1s
-      retries: 3
-      start_period: 5s
-      start_interval: 5s
-    volumes:
-      - cache_data:/data:Z
+      test: ["CMD", "valkey-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     networks:
       - dokploy-network
 
   db:
-    # We use MariaDB because it supports ARM and has the expected collations
     image: mariadb:10.11
-    restart: always
+    restart: unless-stopped
     container_name: misp-db
     environment:
-      - "MYSQL_USER=${MYSQL_USER:-misp}"
-      - "MYSQL_PASSWORD=${MYSQL_PASSWORD:-example}"
-      - "MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-password}"
-      - "MYSQL_DATABASE=${MYSQL_DATABASE:-misp}"
-    command: "\
-      --innodb-buffer-pool-size=${INNODB_BUFFER_POOL_SIZE:-2048M} \
-      --innodb-change-buffering=${INNODB_CHANGE_BUFFERING:-none} \
-      --innodb-io-capacity=${INNODB_IO_CAPACITY:-1000} \
-      --innodb-io-capacity-max=${INNODB_IO_CAPACITY_MAX:-2000} \
-      --innodb-log-file-size=${INNODB_LOG_FILE_SIZE:-600M} \
-      --innodb-read-io-threads=${INNODB_READ_IO_THREADS:-16} \
-      --innodb-stats-persistent=${INNODB_STATS_PERSISTENT:-ON} \
-      --innodb-write-io-threads=${INNODB_WRITE_IO_THREADS:-4}"
-    volumes:
-      - mysql_data:/var/lib/mysql:Z
-    cap_add:
-      - SYS_NICE  # CAP_SYS_NICE Prevent runaway mysql log
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+    command: >
+      --innodb-buffer-pool-size=512M
+      --innodb-log-file-size=200M
+      --innodb-use-native-aio=0
     healthcheck:
-      test: mysqladmin --user=$$MYSQL_USER --password=$$MYSQL_PASSWORD status
-      interval: 2s
-      timeout: 1s
-      retries: 3
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
       start_period: 30s
-      start_interval: 5s
-    ports:
-      - "3307:3306"  # Map to different external port
+    networks:
+      - dokploy-network
+
+  misp-modules:
+    image: ghcr.io/misp/misp-docker/misp-modules:latest
+    restart: unless-stopped
+    container_name: misp-modules
+    healthcheck:
+      test: ["CMD-SHELL", "netstat -ln | grep :6666 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     networks:
       - dokploy-network
 
   misp-core:
-    image: ghcr.io/misp/misp-docker/misp-core:${CORE_RUNNING_TAG:-latest}
-    restart: unless-stopped  # Changed from always
+    image: ghcr.io/misp/misp-docker/misp-core:latest
+    restart: unless-stopped
     container_name: misp-core
-    cap_add:
-      - AUDIT_WRITE
     depends_on:
       redis:
         condition: service_healthy
@@ -103,40 +61,30 @@ services:
       misp-modules:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/users/heartbeat"]  # Fixed healthcheck
+      test: ["CMD", "curl", "-f", "http://localhost/users/login"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 120s  # Longer startup period
-    volumes:
-      - "./configs/:/var/www/MISP/app/Config/:Z"
-      - "./logs/:/var/www/MISP/app/tmp/logs/:Z"
-      - "./files/:/var/www/MISP/app/files/:Z"
-      - "./ssl/:/etc/nginx/certs/:Z"
-      - "./gnupg/:/var/www/MISP/.gnupg/:Z"
+      retries: 10
+      start_period: 180s
     environment:
-      - "BASE_URL=${BASE_URL}"
-      - "ENCRYPTION_KEY=${ENCRYPTION_KEY}"
-      - "DISABLE_SSL_REDIRECT=true"
-      - "DISABLE_PRINTING_PLAINTEXT_CREDENTIALS=true"
-      - "ENABLE_DB_SETTINGS=true"
-      - "DEBUG=0"
-      # Admin settings
-      - "ADMIN_EMAIL=${ADMIN_EMAIL}"
-      - "ADMIN_PASSWORD=${ADMIN_PASSWORD}"
-      - "ADMIN_ORG=${ADMIN_ORG}"
-      - "GPG_PASSPHRASE=${GPG_PASSPHRASE}"
-      # Database settings
-      - "MYSQL_HOST=db"
-      - "MYSQL_USER=${MYSQL_USER}"
-      - "MYSQL_PASSWORD=${MYSQL_PASSWORD}"
-      - "MYSQL_DATABASE=${MYSQL_DATABASE}"
-      # Redis settings
-      - "REDIS_HOST=redis"
-      - "REDIS_PASSWORD=${REDIS_PASSWORD}"
-      # NGINX settings for Traefik
-      - "NGINX_X_FORWARDED_FOR=true"
-      - "NGINX_SET_REAL_IP_FROM=172.0.0.0/8,10.0.0.0/8"
+      - BASE_URL=${BASE_URL}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - DISABLE_SSL_REDIRECT=true
+      - DISABLE_PRINTING_PLAINTEXT_CREDENTIALS=true
+      - ENABLE_DB_SETTINGS=true
+      - DEBUG=0
+      - ADMIN_EMAIL=${ADMIN_EMAIL}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - ADMIN_ORG=${ADMIN_ORG}
+      - GPG_PASSPHRASE=${GPG_PASSPHRASE}
+      - MYSQL_HOST=db
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - REDIS_HOST=redis
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - NGINX_X_FORWARDED_FOR=true
+      - NGINX_SET_REAL_IP_FROM=172.0.0.0/8,10.0.0.0/8
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.misp-http.rule=Host(`misp.fincident.org`)"
@@ -150,66 +98,6 @@ services:
       - "traefik.http.middlewares.redirect-to-https.redirectscheme.permanent=true"
     networks:
       - dokploy-network
-
-  misp-modules:
-    image: ghcr.io/misp/misp-docker/misp-modules:${MODULES_RUNNING_TAG:-latest}
-    restart: always
-    container_name: misp-modules  # Added container name
-    build:
-      context: modules/.
-      args:
-        - MODULES_TAG=${MODULES_TAG:?Missing or outdated .env file, see README.md for instructions}
-        - MODULES_COMMIT=${MODULES_COMMIT}
-        - MODULES_FLAVOR=${MODULES_FLAVOR:-full}
-    healthcheck:
-      test: "/bin/bash -c '</dev/tcp/localhost/6666'"
-      interval: 2s
-      timeout: 1s
-      retries: 3
-      start_period: 5s
-      start_interval: 5s
-    volumes:
-      # custom MISP modules are loaded at startup time
-      - "./custom/action_mod/:/custom/action_mod/:Z"
-      - "./custom/expansion/:/custom/expansion/:Z"
-      - "./custom/export_mod/:/custom/export_mod/:Z"
-      - "./custom/import_mod/:/custom/import_mod/:Z"
-    networks:
-      - dokploy-network
-
-  misp-guard:
-    profiles:
-      - misp-guard
-    restart: always
-    image: ghcr.io/misp/misp-docker/misp-guard:${GUARD_RUNNING_TAG:-latest}
-    container_name: misp-guard  # Added container name
-    build:
-      context: guard/.
-      args:
-        - GUARD_TAG=${GUARD_TAG:?Missing or outdated .env file, see README.md for instructions}
-        - GUARD_COMMIT=${GUARD_COMMIT}
-    depends_on:
-      - misp-core
-    # REMOVED ports unless specifically needed externally
-    # ports:
-    #   - "${GUARD_PORT:-8888}:${GUARD_PORT:-8888}"
-    environment:
-      - "GUARD_PORT=${GUARD_PORT:-8888}"
-      - "GUARD_ARGS=${GUARD_ARGS}"
-    volumes:
-      - ./guard/config.json:/config.json:ro
-    healthcheck:
-      test: "/bin/bash -c '</dev/tcp/localhost/${GUARD_PORT:-8888}'"
-      interval: 2m
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    networks:
-      - dokploy-network
-
-volumes:
-    mysql_data:
-    cache_data:
 
 networks:
   dokploy-network:
