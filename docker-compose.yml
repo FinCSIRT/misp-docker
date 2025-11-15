@@ -1,16 +1,9 @@
 services:
   redis:
-    image: valkey/valkey:7.2
+    image: redis:7.2-alpine
     restart: unless-stopped
     container_name: misp-redis
-    command: valkey-server --requirepass ${REDIS_PASSWORD}
-    environment:
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
-    healthcheck:
-      test: ["CMD", "valkey-cli", "-a", "${REDIS_PASSWORD}", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+    command: redis-server --requirepass RedisPassword123!
     networks:
       - dokploy-network
 
@@ -19,20 +12,13 @@ services:
     restart: unless-stopped
     container_name: misp-db
     environment:
-      - MYSQL_USER=${MYSQL_USER}
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
-      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
-      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=misp
+      - MYSQL_PASSWORD=Password123!
+      - MYSQL_ROOT_PASSWORD=RootPassword123!
+      - MYSQL_DATABASE=misp
     command: >
-      --innodb-buffer-pool-size=512M
-      --innodb-log-file-size=200M
-      --innodb-use-native-aio=0
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
+      --innodb-buffer-pool-size=256M
+      --innodb-log-file-size=128M
     networks:
       - dokploy-network
 
@@ -41,61 +27,33 @@ services:
     restart: unless-stopped
     container_name: misp-core
     depends_on:
-      redis:
-        condition: service_healthy
-      db:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/users/login"]
-      interval: 30s
-      timeout: 10s
-      retries: 20
-      start_period: 300s
+      - redis
+      - db
     environment:
-      # Critical Settings
       - BASE_URL=https://misp.fincident.org
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - ENCRYPTION_KEY=ThisIsA32CharacterKeyForMISP12345
       - DISABLE_SSL_REDIRECT=true
       - DISABLE_PRINTING_PLAINTEXT_CREDENTIALS=true
       - ENABLE_DB_SETTINGS=true
       - DEBUG=0
-      
-      # Admin Account
-      - ADMIN_EMAIL=${ADMIN_EMAIL}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
-      - ADMIN_ORG=${ADMIN_ORG}
-      - GPG_PASSPHRASE=${GPG_PASSPHRASE}
-      
-      # Database
+      - ADMIN_EMAIL=admin@fincident.org
+      - ADMIN_PASSWORD=AdminPassword123!
+      - ADMIN_ORG=FINCIDENT
+      - GPG_PASSPHRASE=GpgPassphrase123
       - MYSQL_HOST=db
-      - MYSQL_USER=${MYSQL_USER}
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
-      - MYSQL_DATABASE=${MYSQL_DATABASE}
-      
-      # Redis
+      - MYSQL_USER=misp
+      - MYSQL_PASSWORD=Password123!
+      - MYSQL_DATABASE=misp
       - REDIS_HOST=redis
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
-      
-      # NGINX
-      - NGINX_X_FORWARDED_FOR=true
-      - NGINX_SET_REAL_IP_FROM=172.0.0.0/8,10.0.0.0/8,192.168.0.0/16
+      - REDIS_PASSWORD=RedisPassword123!
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.misp-http.rule=Host(`misp.fincident.org`)"
-      - "traefik.http.routers.misp-http.entrypoints=web"
-      - "traefik.http.routers.misp-http.middlewares=redirect-to-https"
       - "traefik.http.routers.misp.rule=Host(`misp.fincident.org`)"
       - "traefik.http.routers.misp.entrypoints=websecure"
       - "traefik.http.routers.misp.tls.certresolver=letsencrypt"
       - "traefik.http.services.misp.loadbalancer.server.port=80"
-      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
-      - "traefik.http.middlewares.redirect-to-https.redirectscheme.permanent=true"
     networks:
       - dokploy-network
-
-volumes:
-  mysql_data:
-  cache_data:
 
 networks:
   dokploy-network:
