@@ -63,6 +63,8 @@ services:
       start_period: 180s
     environment:
       - BASE_URL=${BASE_URL}
+      - MISP_EXTERNAL_BASEURL=https://misp.fincident.org
+      - SECURITY_REST_CLIENT_BASEURL=https://misp.fincident.org
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - DISABLE_SSL_REDIRECT=true
       - DISABLE_PRINTING_PLAINTEXT_CREDENTIALS=true
