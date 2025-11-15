@@ -11,6 +11,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 10s
     networks:
       - dokploy-network
 
@@ -24,8 +25,8 @@ services:
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
       - MYSQL_DATABASE=${MYSQL_DATABASE}
     command: >
-      --innodb-buffer-pool-size=512M
-      --innodb-log-file-size=200M
+      --innodb-buffer-pool-size=256M
+      --innodb-log-file-size=128M
       --innodb-use-native-aio=0
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
@@ -40,8 +41,6 @@ services:
     image: ghcr.io/misp/misp-docker/misp-modules:latest
     restart: unless-stopped
     container_name: misp-modules
-    # REMOVED healthcheck - it's often problematic
-    # Increased start period and removed dependency check
     networks:
       - dokploy-network
 
@@ -54,34 +53,44 @@ services:
         condition: service_healthy
       db:
         condition: service_healthy
-      # REMOVED misp-modules dependency - let it start independently
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost/users/login"]
       interval: 30s
       timeout: 10s
-      retries: 10
-      start_period: 180s
+      retries: 15
+      start_period: 240s  # Give it 4 minutes to initialize
     environment:
+      # Critical settings
       - BASE_URL=${BASE_URL}
-      - MISP_EXTERNAL_BASEURL=https://misp.fincident.org
-      - SECURITY_REST_CLIENT_BASEURL=https://misp.fincident.org
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - DISABLE_SSL_REDIRECT=true
       - DISABLE_PRINTING_PLAINTEXT_CREDENTIALS=true
       - ENABLE_DB_SETTINGS=true
       - DEBUG=0
+      
+      # Admin settings
       - ADMIN_EMAIL=${ADMIN_EMAIL}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - ADMIN_ORG=${ADMIN_ORG}
       - GPG_PASSPHRASE=${GPG_PASSPHRASE}
+      
+      # Database
       - MYSQL_HOST=db
       - MYSQL_USER=${MYSQL_USER}
       - MYSQL_PASSWORD=${MYSQL_PASSWORD}
       - MYSQL_DATABASE=${MYSQL_DATABASE}
+      
+      # Redis
       - REDIS_HOST=redis
       - REDIS_PASSWORD=${REDIS_PASSWORD}
+      
+      # NGINX
       - NGINX_X_FORWARDED_FOR=true
-      - NGINX_SET_REAL_IP_FROM=172.0.0.0/8,10.0.0.0/8
+      - NGINX_SET_REAL_IP_FROM=172.0.0.0/8,10.0.0.0/8,192.168.0.0/16
+      
+      # PHP settings for stability
+      - PHP_MEMORY_LIMIT=1024M
+      - PHP_MAX_EXECUTION_TIME=300
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.misp-http.rule=Host(`misp.fincident.org`)"
