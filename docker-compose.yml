@@ -118,10 +118,10 @@ services:
       start_interval: 30s
     labels:
         - "traefik.enable=true"
-        - "traefik.http.routers.appsmith-https.rule=Host(`appsmith.fincident.org`)"
-        - "traefik.http.routers.appsmith-https.entrypoints=websecure"
-        - "traefik.http.routers.appsmith-https.tls.certresolver=letsencrypt"
-        - "traefik.http.services.appsmith-service.loadbalancer.server.port=80"
+        - "traefik.http.routers.misp-https.rule=Host(`appsmith.fincident.org`)"
+        - "traefik.http.routers.misp-https.entrypoints=websecure"
+        - "traefik.http.routers.misp-https.tls.certresolver=letsencrypt"
+        - "traefik.http.services.misp-service.loadbalancer.server.port=80"
     volumes:
       - "./configs/:/var/www/MISP/app/Config/:Z"
       - "./logs/:/var/www/MISP/app/tmp/logs/:Z"
