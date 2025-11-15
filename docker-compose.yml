@@ -40,12 +40,8 @@ services:
     image: ghcr.io/misp/misp-docker/misp-modules:latest
     restart: unless-stopped
     container_name: misp-modules
-    healthcheck:
-      test: ["CMD-SHELL", "netstat -ln | grep :6666 || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
+    # REMOVED healthcheck - it's often problematic
+    # Increased start period and removed dependency check
     networks:
       - dokploy-network
 
@@ -58,8 +54,7 @@ services:
         condition: service_healthy
       db:
         condition: service_healthy
-      misp-modules:
-        condition: service_healthy
+      # REMOVED misp-modules dependency - let it start independently
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost/users/login"]
       interval: 30s
