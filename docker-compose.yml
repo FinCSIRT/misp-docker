@@ -147,16 +147,20 @@ services:
       - "traefik.http.routers.misp.entrypoints=websecure"
       - "traefik.http.routers.misp.tls=true"
       - "traefik.http.routers.misp.tls.certresolver=letsencrypt"
-      # --- ⬇️ CRITICAL FIX ⬇️ ---
       - "traefik.http.services.misp.loadbalancer.server.port=80"
-      - "traefik.http.middlewares.misp-redirect.redirectscheme.scheme=https"
-      - "traefik.http.routers.misp.middlewares=misp-redirect"
       - "traefik.docker.network=dokploy-network"
+      # Add HTTP to HTTPS redirect
+      - "traefik.http.routers.misp-http.rule=Host(`misp.fincident.org`)"
+      - "traefik.http.routers.misp-http.entrypoints=web"
+      - "traefik.http.routers.misp-http.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
     environment:
       # ... (all your existing environment variables remain unchanged)
       - "BASE_URL=${BASE_URL:-https://misp.fincident.org}" 
       # ... (rest of environment variables)
       - "NGINX_SSL=false"
+      - "MISP_HTTPS_PORT=80"
+      - "NGINX_SET_REAL_IP_FROM=172.0.0.0/8,10.0.0.0/8"
       - "CRON_USER_ID=${CRON_USER_ID}"
       - "CRON_PULLALL=${CRON_PULLALL}"
       - "CRON_PUSHALL=${CRON_PUSHALL}"
