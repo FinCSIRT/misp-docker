@@ -156,7 +156,7 @@ services:
       # ... (all your existing environment variables remain unchanged)
       - "BASE_URL=${BASE_URL:-https://misp.fincident.org}" 
       # ... (rest of environment variables)
-      - NGINX_SSL=false
+      - "NGINX_SSL=false"
       - "CRON_USER_ID=${CRON_USER_ID}"
       - "CRON_PULLALL=${CRON_PULLALL}"
       - "CRON_PUSHALL=${CRON_PUSHALL}"
