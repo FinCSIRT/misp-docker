@@ -141,18 +141,22 @@ services:
       - "./gnupg/:/var/www/MISP/.gnupg/:Z"
     # --- ⬇️ CHANGE ⬇️ ---
     # Added Traefik labels for automatic reverse proxy configuration
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.misp.rule=Host(`${MISP_DOMAIN:-misp.yourdomain.com}`)"
-      - "traefik.http.routers.misp.entrypoints=websecure"
-      - "traefik.http.routers.misp.tls=true"
-      - "traefik.http.routers.misp.tls.certresolver=letsencrypt"
-      - "traefik.http.services.misp.loadbalancer.server.port=443"
-      - "traefik.docker.network=dokploy-network"
+  labels:
+    - "traefik.enable=true"
+    - "traefik.http.routers.misp.rule=Host(`misp.fincident.org`)"
+    - "traefik.http.routers.misp.entrypoints=websecure"
+    - "traefik.http.routers.misp.tls=true"
+    - "traefik.http.routers.misp.tls.certresolver=letsencrypt"
+    # --- ⬇️ CRITICAL FIX ⬇️ ---
+    - "traefik.http.services.misp.loadbalancer.server.port=80"
+    - "traefik.http.middlewares.misp-redirect.redirectscheme.scheme=https"
+    - "traefik.http.routers.misp.middlewares=misp-redirect"
+    - "traefik.docker.network=dokploy-network"
     environment:
       # ... (all your existing environment variables remain unchanged)
       - "BASE_URL=${BASE_URL:-https://misp.fincident.org}" 
       # ... (rest of environment variables)
+      - NGINX_SSL=false
       - "CRON_USER_ID=${CRON_USER_ID}"
       - "CRON_PULLALL=${CRON_PULLALL}"
       - "CRON_PUSHALL=${CRON_PUSHALL}"
