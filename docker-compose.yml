@@ -1,25 +1,31 @@
 services:
-  # This is capable to relay via gmail, Amazon SES, or generic relays
-  # See: https://gitlab.com/egos-tech/smtp
+  # ---------------------------------------------------
+  # 📧 SMTP Relay (Mail)
+  # ---------------------------------------------------
   mail:
     image: ghcr.io/egos-tech/smtp:1.1.3
     restart: always
+    networks:
+      - dokploy-network
     environment:
-      # For use with Amazon SES relay
       - "SES_USER=${SES_USER}"
       - "SES_PASSWORD=${SES_PASSWORD}"
       - "SES_REGION=${SES_REGION}"
       - "SES_PORT=${SES_PORT}"
-      # Generic SMTP relay
       - "SMARTHOST_ADDRESS=${SMARTHOST_ADDRESS}"
       - "SMARTHOST_PORT=${SMARTHOST_PORT}"
       - "SMARTHOST_USER=${SMARTHOST_USER}"
       - "SMARTHOST_PASSWORD=${SMARTHOST_PASSWORD}"
       - "SMARTHOST_ALIASES=${SMARTHOST_ALIASES}"
 
+  # ---------------------------------------------------
+  # ⚡ Cache (Redis)
+  # ---------------------------------------------------
   redis:
     image: valkey/valkey:7.2
     restart: always
+    networks:
+      - dokploy-network
     command: |
       sh -c '
         if [ "$${ENABLE_REDIS_EMPTY_PASSWORD:-false}" = "true" ]; then
@@ -44,14 +50,17 @@ services:
       timeout: 1s
       retries: 3
       start_period: 5s
-      start_interval: 5s
     volumes:
       - cache_data:/data:Z
 
+  # ---------------------------------------------------
+  # 🗄️ Database (MariaDB)
+  # ---------------------------------------------------
   db:
-    # We use MariaDB because it supports ARM and has the expected collations
     image: mariadb:10.11
     restart: always
+    networks:
+      - dokploy-network
     environment:
       - "MYSQL_USER=${MYSQL_USER:-misp}"
       - "MYSQL_PASSWORD=${MYSQL_PASSWORD:-example}"
@@ -69,40 +78,36 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql:Z
     cap_add:
-      - SYS_NICE # CAP_SYS_NICE Prevent runaway mysql log
+      - SYS_NICE
     healthcheck:
       test: mysqladmin --user=$$MYSQL_USER --password=$$MYSQL_PASSWORD status
       interval: 2s
       timeout: 1s
       retries: 3
       start_period: 30s
-      start_interval: 5s
 
+  # ---------------------------------------------------
+  # 🧠 MISP Core (The Application)
+  # ---------------------------------------------------
   misp-core:
+    # ✅ FIX: Using ghcr.io image directly (latest tag for Watchtower updates)
     image: ghcr.io/misp/misp-docker/misp-core:${CORE_RUNNING_TAG:-latest}
     restart: always
+    networks:
+      - dokploy-network
     cap_add:
       - AUDIT_WRITE
-    build:
-      context: core/.
-      args:
-        - CORE_TAG=${CORE_TAG:?Missing or outdated .env file, see README.md for instructions}
-        - CORE_COMMIT=${CORE_COMMIT}
-        - CORE_FLAVOR=${CORE_FLAVOR:-standard}
-        - PHP_VER=${PHP_VER:?Missing or outdated .env file, see README.md for instructions}
-        - PYPI_REDIS_VERSION=${PYPI_REDIS_VERSION}
-        - PYPI_LIEF_VERSION=${PYPI_LIEF_VERSION}
-        - PYPI_PYDEEP2_VERSION=${PYPI_PYDEEP2_VERSION}
-        - PYPI_PYTHON_MAGIC_VERSION=${PYPI_PYTHON_MAGIC_VERSION}
-        - PYPI_MISP_LIB_STIX2_VERSION=${PYPI_MISP_LIB_STIX2_VERSION}
-        - PYPI_MAEC_VERSION=${PYPI_MAEC_VERSION}
-        - PYPI_MIXBOX_VERSION=${PYPI_MIXBOX_VERSION}
-        - PYPI_CYBOX_VERSION=${PYPI_CYBOX_VERSION}
-        - PYPI_PYMISP_VERSION=${PYPI_PYMISP_VERSION}
-        - PYPI_MISP_STIX_VERSION=${PYPI_MISP_STIX_VERSION}
-        - PYPI_TAXII2_CLIENT=${PYPI_TAXII2_CLIENT}
-        - PYPI_SETUPTOOLS_VERSION=${PYPI_SETUPTOOLS_VERSION}
-        - PYPI_SUPERVISOR_VERSION=${PYPI_SUPERVISOR_VERSION}
+
+    # ✅ FIX: Entrypoint override to fix permission issues
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        echo "🔧 Fixing permissions for all entrypoint scripts..."
+        chmod +x /*.sh
+        echo "🚀 Starting MISP..."
+        exec /entrypoint.sh "$@"
+
     depends_on:
       redis:
         condition: service_healthy
@@ -112,26 +117,40 @@ services:
         condition: service_healthy
     healthcheck:
       test: curl -ks ${BASE_URL:-https://localhost}/users/heartbeat > /dev/null || exit 1
-      interval: 2s
-      timeout: 1s
+      interval: 10s
+      timeout: 5s
       retries: 3
-      start_period: 30s
-      start_interval: 30s
-    ports:
-      - "${CORE_HTTP_PORT:-80}:80"
-      - "${CORE_HTTPS_PORT:-443}:443"
+      start_period: 60s
+    
+    # ✅ Traefik + Watchtower Labels
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.misp-core.rule=Host(`misp.fincident.org`)"
+      - "traefik.http.routers.misp-core.entrypoints=websecure"
+      - "traefik.http.routers.misp-core.tls=true"
+      - "traefik.http.routers.misp-core.tls.certresolver=letsencrypt"
+      - "traefik.http.services.misp-core.loadbalancer.server.port=80"
+      - "traefik.docker.network=dokploy-network"
+      # Watchtower Scope
+      - "com.centurylinklabs.watchtower.scope=misp-scope"
+
     volumes:
       - "./configs/:/var/www/MISP/app/Config/:Z"
       - "./logs/:/var/www/MISP/app/tmp/logs/:Z"
       - "./files/:/var/www/MISP/app/files/:Z"
       - "./ssl/:/etc/nginx/certs/:Z"
       - "./gnupg/:/var/www/MISP/.gnupg/:Z"
-    # customize by replacing ${CUSTOM_PATH} with a path containing 'files/customize_misp.sh'
-    # - "${CUSTOM_PATH}/:/custom/:Z"
-    # mount custom ca root certificates
-    # - "./rootca.pem:/usr/local/share/ca-certificates/rootca.crt:Z"
+    
     environment:
-      - "BASE_URL=${BASE_URL}"
+      # Connection Settings
+      - "BASE_URL=${BASE_URL:-https://misp.fincident.org}"
+      - "MYSQL_HOST=db"
+      - "REDIS_HOST=redis"
+      # Proxy Fixes
+      - "NGINX_X_FORWARDED_FOR=172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"
+      - "NGINX_SET_REAL_IP_FROM=172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"
+      
+      # --- Full Environment from your file (Preserved) ---
       - "CRON_USER_ID=${CRON_USER_ID}"
       - "CRON_PULLALL=${CRON_PULLALL}"
       - "CRON_PUSHALL=${CRON_PUSHALL}"
@@ -142,7 +161,6 @@ services:
       - "ENCRYPTION_KEY=${ENCRYPTION_KEY}"
       - "DISABLE_CA_REFRESH=${DISABLE_CA_REFRESH}"
       - "DISABLE_PRINTING_PLAINTEXT_CREDENTIALS=${DISABLE_PRINTING_PLAINTEXT_CREDENTIALS}"
-      # standard settings
       - "ADMIN_EMAIL=${ADMIN_EMAIL}"
       - "MISP_CONTACT=${MISP_CONTACT}"
       - "MISP_EMAIL=${MISP_EMAIL}"
@@ -152,7 +170,6 @@ services:
       - "ADMIN_ORG_UUID=${ADMIN_ORG_UUID}"
       - "GPG_PASSPHRASE=${GPG_PASSPHRASE}"
       - "ATTACHMENTS_DIR=${ATTACHMENTS_DIR}"
-      # OIDC authentication settings
       - "OIDC_ENABLE=${OIDC_ENABLE}"
       - "OIDC_PROVIDER_URL=${OIDC_PROVIDER_URL}"
       - "OIDC_ISSUER=${OIDC_ISSUER}"
@@ -167,7 +184,6 @@ services:
       - "OIDC_REDIRECT_URI=${OIDC_REDIRECT_URI}"
       - "OIDC_SCOPES=${OIDC_SCOPES}"
       - "OIDC_LOGOUT_URL=${OIDC_LOGOUT_URL}"
-      # APACHESECUREAUTH authentication settings
       - "APACHESECUREAUTH_LDAP_OLD_VAR_DETECT=${LDAP_ENABLE}"
       - "APACHESECUREAUTH_LDAP_ENABLE=${APACHESECUREAUTH_LDAP_ENABLE:-${LDAP_ENABLE}}"
       - "APACHESECUREAUTH_LDAP_APACHE_ENV=${APACHESECUREAUTH_LDAP_APACHE_ENV:-${LDAP_APACHE_ENV}}"
@@ -185,7 +201,6 @@ services:
       - "APACHESECUREAUTH_LDAP_OPT_PROTOCOL_VERSION=${APACHESECUREAUTH_LDAP_OPT_PROTOCOL_VERSION:-${LDAP_OPT_PROTOCOL_VERSION}}"
       - "APACHESECUREAUTH_LDAP_OPT_NETWORK_TIMEOUT=${APACHESECUREAUTH_LDAP_OPT_NETWORK_TIMEOUT:-${LDAP_OPT_NETWORK_TIMEOUT}}"
       - "APACHESECUREAUTH_LDAP_OPT_REFERRALS=${APACHESECUREAUTH_LDAP_OPT_REFERRALS:-${LDAP_OPT_REFERRALS}}"
-      # LdapAuth MISP authentication settings
       - "LDAPAUTH_ENABLE=${LDAPAUTH_ENABLE}"
       - "LDAPAUTH_LDAPSERVER=${LDAPAUTH_LDAPSERVER}"
       - "LDAPAUTH_LDAPDN=${LDAPAUTH_LDAPDN}"
@@ -207,7 +222,6 @@ services:
       - "LDAPAUTH_LDAPTLSCUSTOMCACERT=${LDAPAUTH_LDAPTLSCUSTOMCACERT}"
       - "LDAPAUTH_LDAPTLSCRLCHECK=${LDAPAUTH_LDAPTLSCRLCHECK}"
       - "LDAPAUTH_LDAPTLSPROTOCOLMIN=${LDAPAUTH_LDAPTLSPROTOCOLMIN}"
-      # AAD authentication settings
       - "AAD_ENABLE=${AAD_ENABLE}"
       - "AAD_CLIENT_ID=${AAD_CLIENT_ID}"
       - "AAD_TENANT_ID=${AAD_TENANT_ID}"
@@ -219,27 +233,22 @@ services:
       - "AAD_MISP_ORGADMIN=${AAD_MISP_ORGADMIN}"
       - "AAD_MISP_SITEADMIN=${AAD_MISP_SITEADMIN}"
       - "AAD_CHECK_GROUPS=${AAD_CHECK_GROUPS}"
-      # nginx settings
       - "NGINX_X_FORWARDED_FOR=${NGINX_X_FORWARDED_FOR}"
       - "NGINX_SET_REAL_IP_FROM=${NGINX_SET_REAL_IP_FROM}"
       - "NGINX_CLIENT_MAX_BODY_SIZE=${NGINX_CLIENT_MAX_BODY_SIZE:-50M}"
-      # proxy settings
       - "PROXY_ENABLE=${PROXY_ENABLE}"
       - "PROXY_HOST=${PROXY_HOST}"
       - "PROXY_PORT=${PROXY_PORT}"
       - "PROXY_METHOD=${PROXY_METHOD}"
       - "PROXY_USER=${PROXY_USER}"
       - "PROXY_PASSWORD=${PROXY_PASSWORD}"
-      # s3 settings
       - "S3_BUCKET=${S3_BUCKET}"
       - "S3_ENDPOINT=${S3_ENDPOINT}"
       - "S3_ACCESS_KEY=${S3_ACCESS_KEY}"
       - "S3_SECRET_KEY=${S3_SECRET_KEY}"
-      # supervisor settings
       - "SUPERVISOR_HOST=${SUPERVISOR_HOST}"
       - "SUPERVISOR_USERNAME=${SUPERVISOR_USERNAME}"
       - "SUPERVISOR_PASSWORD=${SUPERVISOR_PASSWORD}"
-      # sync server settings (see https://www.misp-project.org/openapi/#tag/Servers for more options)
       - "SYNCSERVERS=${SYNCSERVERS}"
       - |
         SYNCSERVERS_1_DATA=
@@ -251,45 +260,36 @@ services:
           "pull_rules": "${SYNCSERVERS_1_PULL_RULES}",
           "pull": true
         }
-      # mysql settings
-      - "MYSQL_HOST=${MYSQL_HOST:-db}"
+      - "MYSQL_HOST=db"
       - "MYSQL_PORT=${MYSQL_PORT:-3306}"
       - "MYSQL_USER=${MYSQL_USER:-misp}"
       - "MYSQL_PASSWORD=${MYSQL_PASSWORD:-example}"
       - "MYSQL_DATABASE=${MYSQL_DATABASE:-misp}"
-      # mysql TLS settings
       - "MYSQL_TLS=${MYSQL_TLS:-false}"
       - "MYSQL_TLS_CA=${MYSQL_TLS_CA}"
       - "MYSQL_TLS_CERT=${MYSQL_TLS_CERT}"
       - "MYSQL_TLS_KEY=${MYSQL_TLS_KEY}"
-      # redis settings
-      - "REDIS_HOST=${REDIS_HOST:-redis}"
+      - "REDIS_HOST=redis"
       - "REDIS_PORT=${REDIS_PORT:-6379}"
       - "REDIS_PASSWORD=${REDIS_PASSWORD:-redispassword}"
       - "ENABLE_REDIS_EMPTY_PASSWORD=${ENABLE_REDIS_EMPTY_PASSWORD:-false}"
-      # debug setting
       - "DEBUG=${DEBUG}"
-      # SMTP setting
       - "SMTP_FQDN=${SMTP_FQDN}"
       - "SMTP_PORT=${SMTP_PORT:-25}"
-      # NGINX settings
       - "FASTCGI_READ_TIMEOUT=${FASTCGI_READ_TIMEOUT:-300s}"
       - "FASTCGI_SEND_TIMEOUT=${FASTCGI_SEND_TIMEOUT:-300s}"
       - "FASTCGI_CONNECT_TIMEOUT=${FASTCGI_CONNECT_TIMEOUT:-300s}"
       - "FASTCGI_STATUS_LISTEN=${FASTCGI_STATUS_LISTEN}"
-      # PHP settings
       - "PHP_MEMORY_LIMIT=${PHP_MEMORY_LIMIT:-2048M}"
       - "PHP_MAX_EXECUTION_TIME=${PHP_MAX_EXECUTION_TIME:-300}"
       - "PHP_UPLOAD_MAX_FILESIZE=${PHP_UPLOAD_MAX_FILESIZE:-50M}"
       - "PHP_POST_MAX_SIZE=${PHP_POST_MAX_SIZE:-50M}"
       - "PHP_MAX_INPUT_TIME=${PHP_MAX_INPUT_TIME:-300}"
       - "PHP_MAX_FILE_UPLOADS=${PHP_MAX_FILE_UPLOADS:-50}"
-      # PHP FPM pool setup
       - "PHP_FCGI_CHILDREN=${PHP_FCGI_CHILDREN:-5}"
       - "PHP_FCGI_START_SERVERS=${PHP_FCGI_START_SERVERS:-2}"
       - "PHP_FCGI_SPARE_SERVERS=${PHP_FCGI_SPARE_SERVERS:-1}"
       - "PHP_FCGI_MAX_REQUESTS=${PHP_FCGI_MAX_REQUESTS:-0}"
-      # additional PHP settings
       - "PHP_SESSION_TIMEOUT=${PHP_SESSION_TIMEOUT:-60}"
       - "PHP_SESSION_COOKIE_TIMEOUT=${PHP_SESSION_COOKIE_TIMEOUT:-10080}"
       - "PHP_SESSION_DEFAULTS=${PHP_SESSION_DEFAULTS:-php}"
@@ -299,48 +299,45 @@ services:
       - "PHP_SESSION_COOKIE_DOMAIN=${PHP_SESSION_COOKIE_DOMAIN}"
       - "PHP_SESSION_COOKIE_SAMESITE=${PHP_SESSION_COOKIE_SAMESITE:-Lax}"
       - "PHP_TIMEZONE=${PHP_TIMEZONE:-UTC}"
-      # security settings
       - "HSTS_MAX_AGE=${HSTS_MAX_AGE}"
       - "X_FRAME_OPTIONS=${X_FRAME_OPTIONS}"
       - "CONTENT_SECURITY_POLICY=${CONTENT_SECURITY_POLICY}"
 
+  # ---------------------------------------------------
+  # 🧩 MISP Modules (Enrichment)
+  # ---------------------------------------------------
   misp-modules:
     image: ghcr.io/misp/misp-docker/misp-modules:${MODULES_RUNNING_TAG:-latest}
     restart: always
-    build:
-      context: modules/.
-      args:
-        - MODULES_TAG=${MODULES_TAG:?Missing or outdated .env file, see README.md for instructions}
-        - MODULES_COMMIT=${MODULES_COMMIT}
-        - MODULES_FLAVOR=${MODULES_FLAVOR:-standard}
+    networks:
+      - dokploy-network
+    # Watchtower Scope
+    labels:
+      - "com.centurylinklabs.watchtower.scope=misp-scope"
     healthcheck:
       test: "/bin/bash -c '</dev/tcp/localhost/6666'"
       interval: 2s
       timeout: 1s
       retries: 3
       start_period: 5s
-      start_interval: 5s
     volumes:
-      # custom MISP modules are loaded at startup time
       - "./custom/action_mod/:/custom/action_mod/:Z"
       - "./custom/expansion/:/custom/expansion/:Z"
       - "./custom/export_mod/:/custom/export_mod/:Z"
       - "./custom/import_mod/:/custom/import_mod/:Z"
 
+  # ---------------------------------------------------
+  # 🛡️ MISP Guard (Optional)
+  # ---------------------------------------------------
   misp-guard:
+    image: ghcr.io/misp/misp-docker/misp-guard:${GUARD_RUNNING_TAG:-latest}
+    restart: always
     profiles:
       - misp-guard
-    restart: always
-    image: ghcr.io/misp/misp-docker/misp-guard:${GUARD_RUNNING_TAG:-latest}
-    build:
-      context: guard/.
-      args:
-        - GUARD_TAG=${GUARD_TAG:?Missing or outdated .env file, see README.md for instructions}
-        - GUARD_COMMIT=${GUARD_COMMIT}
+    networks:
+      - dokploy-network
     depends_on:
       - misp-core
-    ports:
-      - "${GUARD_PORT:-8888}:${GUARD_PORT:-8888}"
     environment:
       - "GUARD_PORT=${GUARD_PORT:-8888}"
       - "GUARD_ARGS=${GUARD_ARGS}"
@@ -353,6 +350,26 @@ services:
       retries: 3
       start_period: 10s
 
+  # ---------------------------------------------------
+  # 🔭 Watchtower (The Auto-Updater)
+  # ---------------------------------------------------
+  watchtower:
+    image: containrrr/watchtower
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=86400 # Check once a day (seconds)
+    # Only update containers with the label: com.centurylinklabs.watchtower.scope=misp-scope
+    command: --scope misp-scope
+    networks:
+      - dokploy-network
+
 volumes:
   mysql_data:
   cache_data:
+
+networks:
+  dokploy-network:
+    external: true
